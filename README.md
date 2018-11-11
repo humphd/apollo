@@ -21,3 +21,10 @@ The codebase is in a pre-alpha stage so there is a lot wrong with it. Trying to 
   - `make`
 - Running the executable
   - `./apollo`
+
+## Contribution Note
+If the HTML contains the month and year but not the day, we set the day to 01. To create a distinction between these dates and release dates _actually_ released on the first of the month, we use the following standard:
+
+**IMPORTANT** : The standard we use for this situation is to set the date in the db as ([1999 + YYYY]-MM-01)
+- Example: A recording released on September 2018 without a day will be stored as 4017-09-01
+  - Conversion back will be handled on the client-side 

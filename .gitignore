@@ -1,0 +1,9 @@
+.DS_Store
+
+# CMake / Make
+CMakeCache.txt
+CMakeFiles/
+cmake_install.cmake
+Makefile
+
+apollo

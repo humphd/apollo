@@ -2,10 +2,6 @@
 
 ## Set up the apollo database using postgres
 
-# TODO MAKE SURE TO REMOVE THIS BEFORE PUSHING AAAAAAA
-dropdb "apollo"
-dropuser "apollo"
-
 # check if postgres is installed
 which -s psql
 if [ ! $? -eq 0 ]

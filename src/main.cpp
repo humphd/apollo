@@ -52,8 +52,13 @@ struct Recording {
     std::string addNewArtist(pqxx::nontransaction&, const std::string&);
     std::string addNewProducer(pqxx::nontransaction&, const std::string&);
     std::string addNewLabel(pqxx::nontransaction&, const std::string&);
-    std::string addNewGenre(pqxx::nontransaction&, const std::string&, const std::string&);
+    std::string addNewGenre(pqxx::nontransaction&, const std::string&);
     std::string addNewRecording(pqxx::nontransaction&, const std::string&, const std::string&);
+    void addNewRecordingArtistBride(pqxx::nontransaction&, const std::string&, const std::string&);
+    void addNewRecordingLabelBridge(pqxx::nontransaction&, const std::string&, const std::string&);
+    void addNewRecordingGenreBridge(pqxx::nontransaction&, const std::string&, const std::string&);
+    void addNewRecordingProducerBridge(pqxx::nontransaction&, const std::string&, const std::string&);
+    void addNewArtistGenreBridge(pqxx::nontransaction&, const std::string&, const std::string&);
 //    void addNewRecording(pqxx::nontransaction&, const std::shared_ptr<Recording>&);
     void pullFromHTML(const std::string&, std::map<std::string,std::vector<std::shared_ptr<Recording>>>&, std::vector<std::shared_ptr<Recording>>&);
     void updateDB(pqxx::nontransaction&, const  std::map<std::string,std::vector<std::shared_ptr<Recording>>>&, const std::vector<std::shared_ptr<Recording>>&);
@@ -79,17 +84,32 @@ int main() {
         }
 
         connection.prepare("FindArtistName", "SELECT * FROM artist WHERE name = $1");
-        connection.prepare("FindGenreID", "SELECT genre_id FROM genre WHERE name = $1 AND subgenre_name = $2");
 //        connection.prepare("FindArtistName", "SELECT * FROM recording WHERE artist = $1");
         connection.prepare("FindRecordingName", "SELECT * FROM recording WHERE name = $1");
-        connection.prepare("FindRecordingAndArtist", "SELECT * FROM recording WHERE name = $1 AND artist = $2");
+        // Use FindRecordingArtistBridge
+        // connection.prepare("FindRecordingAndArtist", "SELECT * FROM b_recording_artist WHERE recording_id = $1 AND artist_id = $2");
+
+        connection.prepare("FindArtistID", "SELECT artist_id FROM artist WHERE name = $1");
+        connection.prepare("FindProducerID", "SELECT producer_id FROM producer WHERE name = $1");
+        connection.prepare("FindLabelID", "SELECT label_id FROM label WHERE name = $1");
+        connection.prepare("FindGenreID", "SELECT genre_id FROM genre WHERE name = $1");
+        connection.prepare("FindRecordingID", "SELECT recording_id FROM recording WHERE name = $1 AND release_date = $2");
+        connection.prepare("FindRecordingArtistBridge", "SELECT * FROM b_recording_artist WHERE b_recording_artist.recording_id = $1 AND b_recording_artist.artist_id = $2");
+        connection.prepare("FindRecordingGenreBridge", "SELECT * FROM b_recording_genre WHERE b_recording_genre.recording_id = $1 AND b_recording_genre.genre_id = $2");
+        connection.prepare("FindRecordingLabelBridge", "SELECT * FROM b_recording_label WHERE b_recording_label.recording_id = $1 AND b_recording_label.label_id = $2");
+        connection.prepare("FindRecordingProducerBridge", "SELECT * FROM b_recording_producer WHERE b_recording_producer.recording_id = $1 AND b_recording_producer.producer_id = $2");
+        connection.prepare("FindArtistGenreBridge", "SELECT * FROM b_artist_genre WHERE b_artist_genre.artist_id = $1 AND b_artist_genre.genre_id = $2");
 
         connection.prepare("AddNewArtist", "INSERT INTO artist (name) VALUES ($1) RETURNING artist_id");
         connection.prepare("AddNewProducer", "INSERT INTO producer (name) VALUES ($1) RETURNING producer_id");
         connection.prepare("AddNewLabel", "INSERT INTO label (name) VALUES ($1) RETURNING label_id");
-        connection.prepare("AddNewGenre", "INSERT INTO genre (name, subgenre_name) VALUES ($1, $2) RETURNING genre_id");
+        connection.prepare("AddNewGenre", "INSERT INTO genre (name) VALUES ($1) RETURNING genre_id");
         connection.prepare("AddNewRecording", "INSERT INTO recording (name, release_date) VALUES ($1, $2) RETURNING recording_id");
-
+        connection.prepare("AddNewRecordingArtistBride", "INSERT INTO b_recording_artist (recording_id, artist_id) VALUES ($1, $2)");
+        connection.prepare("AddNewRecordingGenreBride", "INSERT INTO b_recording_genre (recording_id, genre_id) VALUES ($1, $2)");
+        connection.prepare("AddNewRecordingLabelBride", "INSERT INTO b_recording_label (recording_id, label_id) VALUES ($1, $2)");
+        connection.prepare("AddNewRecordingProducerBridge", "INSERT INTO b_recording_producer (recording_id, producer_id) VALUES ($1, $2)");
+        connection.prepare("AddNewArtistGenreBridge", "INSERT INTO b_artist_genre (artist_id, genre_id) VALUES ($1, $2)");
 //        connection.prepare("AddNewRecording", "INSERT INTO recording (name, artist, releaseDate, genres, labels, producers) VALUES ($1, $2, $3, $4, $5, $6)");
 //        connection.prepare("AddNewRecordingNoDate", "INSERT INTO recording (name, artist, genres, labels, producers) VALUES ($1, $2, $3, $4, $5)");
 
@@ -132,9 +152,10 @@ int main() {
         std::map<std::string,std::vector<std::shared_ptr<Recording>>> artistRecordings;
         std::vector<std::shared_ptr<Recording>> recordings;
 
-//        pullFromHTML(data, artistRecordings, recordings);
-//        updateDB(nontransaction, artistRecordings, recordings);
-        std::cout << addNewRecording(nontransaction, "TestName4", "01-01-01") << "\n";
+       pullFromHTML(data, artistRecordings, recordings);
+
+       updateDB(nontransaction, artistRecordings, recordings);
+//        std::cout << addNewRecording(nontransaction, "TestName4", "01-01-01") << "\n";
 
         // Disconnect from the db
         connection.disconnect();
@@ -382,68 +403,85 @@ void promptForManualEditing(const pqxx::result& r, const std::vector<std::shared
 }
 
 /**
- Adds a new artist into the DB
+ Adds a new artist into the DB if it doesn't exist
 
  @param n nontransaction object used to communicate with the database
  @param name the name of the new artist
- @return artist_id of the new artist
+ @return artist_id of the new or existing artist
 */
 std::string addNewArtist(pqxx::nontransaction& n, const std::string& name) {
+    auto existingArtist = n.prepared("FindArtistID")(name).exec();
+    if (existingArtist.size() > 0) {
+        return existingArtist.begin()[0].as<std::string>();
+    }
     auto result = n.prepared("AddNewArtist")(name).exec();
     return result.begin()[0].as<std::string>();
 }
 
 /**
- Adds a new producer into the DB
+ Adds a new producer into the DB if it doesn't exist
 
  @param n nontransaction object used to communicate with the database
  @param name the name of the new producer
- @return producer_id of the new producer
+ @return producer_id of the new or existing producer
 */
 std::string addNewProducer(pqxx::nontransaction& n, const std::string& name) {
+    if (name == "") return "";
+    auto existingProducer = n.prepared("FindProducerID")(name).exec();
+    if (existingProducer.size() > 0) {
+        return existingProducer.begin()[0].as<std::string>();
+    }
     auto result = n.prepared("AddNewProducer")(name).exec();
     return result.begin()[0].as<std::string>();
 }
 
 /**
- Adds a new label into the DB
+ Adds a new label into the DB if it doesn't exist
 
  @param n nontransaction object used to communicate with the database
  @param name the name of the new label
- @return label_id of the new label
+ @return label_id of the new or existing label
 */
 std::string addNewLabel(pqxx::nontransaction& n, const std::string& name) {
+    if (name == "") return "";
+    auto existingLabel = n.prepared("FindLabelID")(name).exec();
+    if (existingLabel.size() > 0) {
+        return existingLabel.begin()[0].as<std::string>();
+    }
     auto result = n.prepared("AddNewLabel")(name).exec();
     return result.begin()[0].as<std::string>();
 }
 
 /**
- Adds new genre into the DB
+ Adds new genre into the DB if it doesn't exist
 
  @param n nontransaction object used to communicate with the database
  @param name the of the new genre
- @param subgenre_name the subgenre name belonging to the new genre
- @return genre_id of the new genre or genre_id of an existing record if the genre + subgenre pair exists
+ @return genre_id of the new or existing genre
 */
-std::string addNewGenre(pqxx::nontransaction& n, const std::string& name, const std::string& subgenre_name) {
-    auto existingRecord = n.prepared("FindGenreID")(name)(subgenre_name).exec();
-    if (existingRecord.size() > 0) {
-        std::cerr << "Genre " << name << " with subgenre " << subgenre_name << " already exists. Duplicate not created. Returned existing genre_id\n";
-        return existingRecord.begin()[0].as<std::string>();
+std::string addNewGenre(pqxx::nontransaction& n, const std::string& name) {
+    if (name == "") return "";
+    auto existingGenre = n.prepared("FindGenreID")(name).exec();
+    if (existingGenre.size() > 0) {
+        return existingGenre.begin()[0].as<std::string>();
     }
-    auto result = n.prepared("AddNewGenre")(name)(subgenre_name).exec();
+    auto result = n.prepared("AddNewGenre")(name).exec();
     return result.begin()[0].as<std::string>();
 }
 
 /**
- Adds new genre into the DB
+ Adds new genre into the DB if it doesn't exist
 
  @param n nontransaction object used to communicate with the database
  @param name the of the new recording
  @param date the release date of the new recording
- @return recording_id of the new recording
+ @return recording_id of the new or existing recording
 */
 std::string addNewRecording(pqxx::nontransaction& n, const std::string& name, const std::string& date) {
+    auto existingRecording = date == "" ? n.prepared("FindRecordingID")(name)().exec() : n.prepared("FindRecordingID")(name)(date).exec();
+    if (existingRecording.size() > 0) {
+        return existingRecording.begin()[0].as<std::string>();
+    }
     auto result = date == "" ? n.prepared("AddNewRecording")(name)().exec() : n.prepared("AddNewRecording")(name)(date).exec();
     return result.begin()[0].as<std::string>();
 }
@@ -473,10 +511,17 @@ std::string addNewRecording(pqxx::nontransaction& n, const std::string& name, co
 std::vector<int> findMatchingRecordingIDs(pqxx::nontransaction& n, const std::vector<std::shared_ptr<Recording>>& recordings) {
     std::vector<int> matchingRecordIDs;
     for (auto recording: recordings) {
-        pqxx::result recordingFound = n.prepared("FindRecordingAndArtist")(recording->name)(recording->artist).exec();
-        if (recordingFound.size() == 1) {
-            // Recording found in the DB, store the recording_id
-            matchingRecordIDs.push_back(recordingFound.begin()[0].as<int>());
+
+        auto foundRecording = n.prepared("FindRecordingID")(recording->name).exec();
+        auto foundArtist = n.prepared("FindArtistID")(recording->artist).exec();
+
+        if (foundRecording.size() > 0 && foundArtist.size() > 0) {
+            std::string recordingID = foundRecording.begin()[0].as<std::string>();
+            std::string artistID = foundArtist.begin()[0].as<std::string>();
+            auto result = n.prepared("FindRecordingArtistBridge")(recordingID)(artistID).exec();
+            if (result.size() == 1) {
+                matchingRecordIDs.push_back(result.begin()[0].as<int>());
+            }
         }
     }
     return matchingRecordIDs;
@@ -492,10 +537,16 @@ std::vector<int> findMatchingRecordingIDs(pqxx::nontransaction& n, const std::ve
 std::vector<std::string> findMatchingRecordingNames(pqxx::nontransaction& n, const std::vector<std::shared_ptr<Recording>>& recordings) {
     std::vector<std::string> matchingRecordIDs;
     for (auto recording: recordings) {
-        pqxx::result recordingFound = n.prepared("FindRecordingAndArtist")(recording->name)(recording->artist).exec();
-        if (recordingFound.size() == 1) {
-            // Recording found in the DB, store the names
-            matchingRecordIDs.push_back(recording->name);
+        auto foundRecording = n.prepared("FindRecordingID")(recording->name).exec();
+        auto foundArtist = n.prepared("FindArtistID")(recording->artist).exec();
+
+        if (foundRecording.size() > 0 && foundArtist.size() > 0) {
+            std::string recordingID = foundRecording.begin()[0].as<std::string>();
+            std::string albumID = foundRecording.begin()[0].as<std::string>();
+            auto result = n.prepared("FindRecordingArtistBridge")(recordingID)(albumID).exec();
+            if (result.size() == 1) {
+                matchingRecordIDs.push_back(recording->name);
+            }
         }
     }
     return matchingRecordIDs;
@@ -611,6 +662,42 @@ void pullFromHTML(const std::string& data, std::map<std::string,std::vector<std:
     }
 }
 
+
+void addNewRecordingArtistBride(pqxx::nontransaction& n, const std::string& recordingID, const std::string& artistID) {
+    auto existingBridge = n.prepared("FindRecordingArtistBridge")(recordingID)(artistID).exec();
+    if (existingBridge.size() == 0) {
+        n.prepared("AddNewRecordingArtistBride")(recordingID)(artistID).exec();
+    }
+}
+void addNewRecordingLabelBridge(pqxx::nontransaction& n, const std::string& recordingID, const std::string& labelID) {
+    if (labelID == "") return;
+    auto existingBridge = n.prepared("FindRecordingLabelBridge")(recordingID)(labelID).exec();
+    if (existingBridge.size() == 0) {
+        n.prepared("AddNewRecordingLabelBride")(recordingID)(labelID).exec();
+    }
+}
+void addNewRecordingGenreBridge(pqxx::nontransaction& n, const std::string& recordingID, const std::string& genreID) {
+    if (genreID == "") return;
+    auto existingBridge = n.prepared("FindRecordingGenreBridge")(recordingID)(genreID).exec();
+    if (existingBridge.size() == 0) {
+        n.prepared("AddNewRecordingGenreBride")(recordingID)(genreID).exec();
+    }
+}
+void addNewRecordingProducerBridge(pqxx::nontransaction& n, const std::string& recordingID, const std::string& producerID) {
+    if (producerID == "") return;
+    auto existingBridge = n.prepared("FindRecordingProducerBridge")(recordingID)(producerID).exec();
+    if (existingBridge.size() == 0) {
+        n.prepared("AddNewRecordingProducerBridge")(recordingID)(producerID).exec();
+    }
+}
+void addNewArtistGenreBridge(pqxx::nontransaction& n, const std::string& artistID, const std::string& genreID) {
+    if (genreID == "") return;
+    auto existingBridge = n.prepared("FindArtistGenreBridge")(artistID)(genreID).exec();
+    if (existingBridge.size() == 0) {
+        n.prepared("AddNewArtistGenreBridge")(artistID)(genreID).exec();
+    }
+}
+
 /**
  Updates the DB to reflect the HTML data
 
@@ -626,130 +713,150 @@ void updateDB(pqxx::nontransaction& nontransaction, const std::map<std::string,s
 
         if (foundArtists.size() == 0) {
             // Recording not in the database -- add it
-//            addNewRecording(nontransaction, recording);
-        } else {
-            // There is already a record with this artist in the database
-            // Check to see if there is anything that needs updating or if a prompt for a manual edit is required according to the rules below
-            //
-            //
-            // Test Cases: (R# == Recording# ; ? == TBA)
-            //          
-            //          HTML            DB          Solution
-            //
-            //          ?               ?           Update [? -> ?]
-            //          ?               R1          Update [R1 -> ?]
-            //          R1              R1          Update [R1 -> R1]
-            //          R1              ?           Update [? -> R1]
-            //          
-            //          R1,R2           R1,R2       Update [R1 -> R1, R2 -> R2]
-            //          R1,?            R1,R2       Update [R1 -> R1, R2 -> ?]
-            //          R1,R2           R1,?        Update [R1 -> R1, ? -> R2]
-            //          R1,?            R1,?        Update [R1 -> R1, ? -> ?]
-            //          R1,R2           R1,R3       Update [R1 -> R1, R2 -> R3]
-            //          R1,R2           R3,R4       Prompt (Edit)
-            //          ?,?             R1,?        Prompt (Edit) 
-            //          ?,?             ?,?         Prompt (Edit)
-            //          R1,?            ?,?         Prompt (Edit)
-            //          
-            //          R1,R2,R3        R1,R2       Add [R3], Update [R1 -> R1, R2 -> R2]
-            //          R1,R2,R3        R1,R4       Prompt (Add and Edit), Update [R1 -> R1]
-            //          R1,R2,?         R1,R2       Add [?], Update [R1 -> R1, R2 -> R2]
-            //          R1,R2,?         ?,?         Prompt (Add and Edit)
-            //          R1,R2,?         R1,?        Prompt (Add and Edit), Update [R1 -> R1]
-            //          R1,?,?          R1,?        Prompt (Add and Edit), Update [R1 -> R1] 
-            //          R1,?,?          R1,R2       Prompt (Add and Edit), Update [R1 -> R1]
-            //
-            //          TODO : Figure out WHEN to create delete prompts -- will have to compare DB to HTML - instead of HTML to DB 
-            //                 -- Figure out which artists in the DB have less records than their HTML counterparts
-            //                 -- If a DB entry has 1 recording but the HTML doesn't have that record - how would it even check that record?
-            //
-            //          R1              R1,R2       Prompt (Delete), Update [R1 -> R1]
-            //          R1              R2,R3       Prompt (Delete and Edit)
-            //          ?               ?,?         Prompt (Delete and Edit)
-            //          ?               R1,?        Prompt (Delete), Update [? -> ?]
-            //
-            pqxx::result foundRecording = nontransaction.prepared("FindRecordingAndArtist")(recording->name)(recording->artist).exec();
-
-            bool multipleTBA = false;
-            if (recording->name == "TBA") {
-                // Check to see if the artist only has one TBA recording in the HTML
-                // If there is more than one, we should note it in case of something like the following example:
-                // 
-                //  HTML: ?,?  --- DB: R1,?
-                // If we don't note that HTML has 2+ TBA recordings, it will end up updating the one TBA recording in the DB twice
-                int count = 0;
-                for (auto recording: artistRecordings.at(recording->artist)) {
-                    if (recording->name == "TBA" && ++count > 1) {
-                        multipleTBA = true;
-                        break;
-                    }
-                }
-            }
-            if (foundRecording.size() > 1) {
-                promptForManualEditing(foundArtists, artistRecordings.at(recording->artist), "Found more than 1 records with the same artist AND recording name\n-- In theory, an artist shouldn't have multiple recordings of the same name but this one did -- resolve issue manually\n");
-            } else if (foundRecording.size() == 1 && !multipleTBA) {
-                updateRecording(nontransaction, foundRecording, recording);
-            } else {
-                // Since we know that the current artist is in the database but the recording name is not found, check to see if there are the same
-                // number of records in the HTML as there are in the DB. 
-                //
-                // If the HTML and DB have the same number of records, check to see if the other HTML records match those in the DB. Store the recording_id's of all that do.
-                //   If all the HTML records match the DB records, update DB record whose id wasn't stored with the current HTML recording
-                //   Else if one or more (excluding the current recording) do not match, prompt for manual editing
-                //
-                // Else if the HTML has more records, check to see if the other HTML records match those in the DB. Store the recording_id's of all that do.
-                //   If all the other HTML records match the DB records, append the new recording to the DB.
-                //   Else if one or more (excluding the current recording) do not match, do not edit -- prompt for manual update. 
-                //
-                // Else, if the DB has more records than the HTML -- something was deleted -- prompt for manual update
-
-                if (artistRecordings.at(recording->artist).size() == foundArtists.size()) {
-                    std::vector<int> matchingRecordIDs = findMatchingRecordingIDs(nontransaction, artistRecordings.at(recording->artist));
-
-                    if (matchingRecordIDs.size() == artistRecordings.at(recording->artist).size() - 1) {
-                        std::string sql = "SELECT * FROM recording WHERE artist = $1";
-                        size_t i;
-                        for (i = 0; i < matchingRecordIDs.size(); i++) {
-                            sql += " AND NOT recording_id = $" + std::to_string(i+2);
-                        }
-
-                        // TODO : The below prepare seems a little bit hackish, try to change it
-                        //         -- The reason I did it this way is because if there are multiple instances where a record is found under these conditions,
-                        //          -- if the multiple times this code is ran as just "FindRecordingAndArtist_FilteringRecordingIDs" without the added number,
-                        //           -- pqxx will complain that I'm redefining "FindRecordingAndArtist_FilteringRecordingIDs" with more/less invocations
-                        //            -- ex: first time, it finds 3 IDs, second time it finds 2 
-                        //             -- one requires invocation(a)(id)(id)(id), the other invocation (a)(id)(id)
-                        nontransaction.conn().prepare("FindRecordingAndArtist_FilteringRecordingIDs" + std::to_string(i), sql);
-                        
-                        // Setup dynamic parameters for the query
-                        pqxx::prepare::invocation invocation = nontransaction.prepared("FindRecordingAndArtist_FilteringRecordingIDs" + std::to_string(i));
-                        invocation(recording->artist);
-                        for (auto id: matchingRecordIDs) {
-                            invocation(id);
-                        }
-                        // Update the missnamed recording
-                        pqxx::result missnamedRecording = invocation.exec();
-                        updateRecording(nontransaction, missnamedRecording, recording);
-                    } else {
-                        promptForManualEditing(foundArtists, artistRecordings.at(recording->artist), "Artist # are the same in the DB and HTML but there are 2+ recording names that differ in the HTML vs the DB.");
-                    }
-                } else if (artistRecordings.at(recording->artist).size() > foundArtists.size()) {
-                    std::vector<std::string> matchingRecordNames = findMatchingRecordingNames(nontransaction, artistRecordings.at(recording->artist));
-
-                    if (matchingRecordNames.size() == foundArtists.size() &&
-                        std::find(matchingRecordNames.begin(), matchingRecordNames.end(), recording->name) == matchingRecordNames.end()) {
-                        // All of the DB records have been found in the HTML but the current record has not -- append
-//                        addNewRecording(nontransaction, recording);
-                    } else if (matchingRecordNames.size() < artistRecordings.at(recording->artist).size() - 1) {
-                        promptForManualEditing(foundArtists, artistRecordings.at(recording->artist), "HTML has more Artists than the DB so we should append but there are 2+ records in the HTML that do not match the DB -- one could be an update and the other could be an append.");
-                    } else if (multipleTBA) {
-                        promptForManualEditing(foundArtists, artistRecordings.at(recording->artist), "Add and Edit");
-                    } else {
-                        std::cerr << "ERROR in main function -- something is wrong with how we treat comparing the HTML and DB records for adding/editing/deleting\n";
-                    }
-                }
-            } 
+            std::string recordingID = addNewRecording(nontransaction, recording->name, recording->releaseDate);
+            std::string artistID = addNewArtist(nontransaction, recording->artist);
+            std::string labelID = addNewLabel(nontransaction, recording->labels);
+            std::string genreID = addNewGenre(nontransaction, recording->genres);
+            std::string producerID = addNewProducer(nontransaction, recording->producers);
+            addNewRecordingArtistBride(nontransaction, recordingID, artistID);
+            addNewRecordingLabelBridge(nontransaction, recordingID, labelID);
+            addNewRecordingGenreBridge(nontransaction, recordingID, genreID);
+            addNewRecordingProducerBridge(nontransaction, recordingID, producerID);
+            addNewArtistGenreBridge(nontransaction, artistID, genreID);
         }
+    // NOTE : Legacy code
+    // Keeping this as reference while I migrate to the new database structure
+//         } else {
+//             // There is already a record with this artist in the database
+//             // Check to see if there is anything that needs updating or if a prompt for a manual edit is required according to the rules below
+//             //
+//             //
+//             // Test Cases: (R# == Recording# ; ? == TBA)
+//             //          
+//             //          HTML            DB          Solution
+//             //
+//             //          ?               ?           Update [? -> ?]
+//             //          ?               R1          Update [R1 -> ?]
+//             //          R1              R1          Update [R1 -> R1]
+//             //          R1              ?           Update [? -> R1]
+//             //          
+//             //          R1,R2           R1,R2       Update [R1 -> R1, R2 -> R2]
+//             //          R1,?            R1,R2       Update [R1 -> R1, R2 -> ?]
+//             //          R1,R2           R1,?        Update [R1 -> R1, ? -> R2]
+//             //          R1,?            R1,?        Update [R1 -> R1, ? -> ?]
+//             //          R1,R2           R1,R3       Update [R1 -> R1, R2 -> R3]
+//             //          R1,R2           R3,R4       Prompt (Edit)
+//             //          ?,?             R1,?        Prompt (Edit) 
+//             //          ?,?             ?,?         Prompt (Edit)
+//             //          R1,?            ?,?         Prompt (Edit)
+//             //          
+//             //          R1,R2,R3        R1,R2       Add [R3], Update [R1 -> R1, R2 -> R2]
+//             //          R1,R2,R3        R1,R4       Prompt (Add and Edit), Update [R1 -> R1]
+//             //          R1,R2,?         R1,R2       Add [?], Update [R1 -> R1, R2 -> R2]
+//             //          R1,R2,?         ?,?         Prompt (Add and Edit)
+//             //          R1,R2,?         R1,?        Prompt (Add and Edit), Update [R1 -> R1]
+//             //          R1,?,?          R1,?        Prompt (Add and Edit), Update [R1 -> R1] 
+//             //          R1,?,?          R1,R2       Prompt (Add and Edit), Update [R1 -> R1]
+//             //
+//             //          TODO : Figure out WHEN to create delete prompts -- will have to compare DB to HTML - instead of HTML to DB 
+//             //                 -- Figure out which artists in the DB have less records than their HTML counterparts
+//             //                 -- If a DB entry has 1 recording but the HTML doesn't have that record - how would it even check that record?
+//             //
+//             //          R1              R1,R2       Prompt (Delete), Update [R1 -> R1]
+//             //          R1              R2,R3       Prompt (Delete and Edit)
+//             //          ?               ?,?         Prompt (Delete and Edit)
+//             //          ?               R1,?        Prompt (Delete), Update [? -> ?]
+//             //
+//             pqxx::result foundRecording;
+
+//             auto rec = nontransaction.prepared("FindRecordingID")(recording->name).exec();
+//             auto art = nontransaction.prepared("FindArtistID")(recording->artist).exec();
+//             if (rec.size() > 0 && art.size() > 0) {
+//                 std::string recordingID = rec.begin()[0].as<std::string>();
+//                 std::string artistID = art.begin()[0].as<std::string>();
+//                 foundRecording = nontransaction.prepared("FindRecordingArtistBridge")(recordingID)(artistID).exec();
+//             }
+
+//             bool multipleTBA = false;
+//             if (recording->name == "TBA") {
+//                 // Check to see if the artist only has one TBA recording in the HTML
+//                 // If there is more than one, we should note it in case of something like the following example:
+//                 // 
+//                 //  HTML: ?,?  --- DB: R1,?
+//                 // If we don't note that HTML has 2+ TBA recordings, it will end up updating the one TBA recording in the DB twice
+//                 int count = 0;
+//                 for (auto recording: artistRecordings.at(recording->artist)) {
+//                     if (recording->name == "TBA" && ++count > 1) {
+//                         multipleTBA = true;
+//                         break;
+//                     }
+//                 }
+//             }
+//             if (foundRecording.size() > 1) {
+//                 promptForManualEditing(foundArtists, artistRecordings.at(recording->artist), "Found more than 1 records with the same artist AND recording name\n-- In theory, an artist shouldn't have multiple recordings of the same name but this one did -- resolve issue manually\n");
+//             } else if (foundRecording.size() == 1 && !multipleTBA) {
+//                 updateRecording(nontransaction, foundRecording, recording);
+//             } else {
+//                 // Since we know that the current artist is in the database but the recording name is not found, check to see if there are the same
+//                 // number of records in the HTML as there are in the DB. 
+//                 //
+//                 // If the HTML and DB have the same number of records, check to see if the other HTML records match those in the DB. Store the recording_id's of all that do.
+//                 //   If all the HTML records match the DB records, update DB record whose id wasn't stored with the current HTML recording
+//                 //   Else if one or more (excluding the current recording) do not match, prompt for manual editing
+//                 //
+//                 // Else if the HTML has more records, check to see if the other HTML records match those in the DB. Store the recording_id's of all that do.
+//                 //   If all the other HTML records match the DB records, append the new recording to the DB.
+//                 //   Else if one or more (excluding the current recording) do not match, do not edit -- prompt for manual update. 
+//                 //
+//                 // Else, if the DB has more records than the HTML -- something was deleted -- prompt for manual update
+
+//                 if (artistRecordings.at(recording->artist).size() == foundArtists.size()) {
+//                     std::vector<int> matchingRecordIDs = findMatchingRecordingIDs(nontransaction, artistRecordings.at(recording->artist));
+
+//                     if (matchingRecordIDs.size() == artistRecordings.at(recording->artist).size() - 1) {
+//                         std::string sql = "SELECT * FROM recording WHERE artist = $1";
+//                         size_t i;
+//                         for (i = 0; i < matchingRecordIDs.size(); i++) {
+//                             sql += " AND NOT recording_id = $" + std::to_string(i+2);
+//                         }
+
+//                         // TODO : The below prepare seems a little bit hackish, try to change it
+//                         //         -- The reason I did it this way is because if there are multiple instances where a record is found under these conditions,
+//                         //          -- if the multiple times this code is ran as just "FindRecordingAndArtist_FilteringRecordingIDs" without the added number,
+//                         //           -- pqxx will complain that I'm redefining "FindRecordingAndArtist_FilteringRecordingIDs" with more/less invocations
+//                         //            -- ex: first time, it finds 3 IDs, second time it finds 2 
+//                         //             -- one requires invocation(a)(id)(id)(id), the other invocation (a)(id)(id)
+//                         nontransaction.conn().prepare("FindRecordingAndArtist_FilteringRecordingIDs" + std::to_string(i), sql);
+                        
+//                         // Setup dynamic parameters for the query
+//                         pqxx::prepare::invocation invocation = nontransaction.prepared("FindRecordingAndArtist_FilteringRecordingIDs" + std::to_string(i));
+//                         invocation(recording->artist);
+//                         for (auto id: matchingRecordIDs) {
+//                             invocation(id);
+//                         }
+//                         // Update the missnamed recording
+//                         pqxx::result missnamedRecording = invocation.exec();
+//                         updateRecording(nontransaction, missnamedRecording, recording);
+//                     } else {
+//                         promptForManualEditing(foundArtists, artistRecordings.at(recording->artist), "Artist # are the same in the DB and HTML but there are 2+ recording names that differ in the HTML vs the DB.");
+//                     }
+//                 } else if (artistRecordings.at(recording->artist).size() > foundArtists.size()) {
+//                     std::vector<std::string> matchingRecordNames = findMatchingRecordingNames(nontransaction, artistRecordings.at(recording->artist));
+
+//                     if (matchingRecordNames.size() == foundArtists.size() &&
+//                         std::find(matchingRecordNames.begin(), matchingRecordNames.end(), recording->name) == matchingRecordNames.end()) {
+//                         // All of the DB records have been found in the HTML but the current record has not -- append
+// //                        addNewRecording(nontransaction, recording);
+//                     } else if (matchingRecordNames.size() < artistRecordings.at(recording->artist).size() - 1) {
+//                         promptForManualEditing(foundArtists, artistRecordings.at(recording->artist), "HTML has more Artists than the DB so we should append but there are 2+ records in the HTML that do not match the DB -- one could be an update and the other could be an append.");
+//                     } else if (multipleTBA) {
+//                         promptForManualEditing(foundArtists, artistRecordings.at(recording->artist), "Add and Edit");
+//                     } else {
+//                         std::cerr << "ERROR in main function -- something is wrong with how we treat comparing the HTML and DB records for adding/editing/deleting\n";
+//                     }
+//                 }
+//             } 
+//        }
     }
 
     // Save database as a JSON file and create archive

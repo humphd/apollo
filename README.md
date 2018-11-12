@@ -1,4 +1,4 @@
-# apollo-backend
+# apollo
 A webscraper written in C++ using the cURL library. Scrapes and stores information about upcoming music albums.
 
 ## Version

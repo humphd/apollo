@@ -2,7 +2,7 @@ CREATE EXTENSION IF NOT EXISTS "uuid-ossp";
 
 CREATE TABLE genre (
 	genre_id uuid DEFAULT uuid_generate_v1() PRIMARY KEY,
-	name TEXT NOT NULL,
+	name TEXT NOT NULL
 );
 
 CREATE TABLE artist (
